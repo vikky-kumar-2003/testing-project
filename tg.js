@@ -197,7 +197,19 @@ app.listen(PORT, () => {
 console.log("🚀 Initializing WhatsApp...");
 const whatsappClient = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ],
+        protocolTimeout: 120000 // 2 minutes timeout for slow environments
+    }
 });
 
 whatsappClient.on("qr", (qr) => {
@@ -363,23 +375,33 @@ async function handleTelegramMessage(event) {
     }
 
     if (isAllowed) {
-        console.log("📩 Forwarding Message...");
-        let text = message.text || "";
+        const startTime = Date.now(); // Start timer
+        console.log("📩 Yeh allowed source hai - Forward kar raha...");
 
-        // Clean text
+        let text = message.text || "[Sirf media - text nahi]";
+
+        // Cleaning (tera original)
         text = text.replace(/\*\*/g, "*")
             .replace("⚡ *FAST DROP*", "")
             .replace("⚡ *Men’s Product Alert (Superfast)*", "")
-            .replace(/Buy Cheap Vouchers.*\n/g, "") // Simplified cleanup for brevity, add full regex if needed
+            .replace(/Buy Cheap Vouchers.*\n/g, "")
+            .replace(/🛒\s*\*{0,2}Buy Vouchers\*{0,2}:.*@SheinXVouchers_Bot/gi, "")
+            .replace(/⚙️\s*\*{0,2}Powered by\*{0,2}:.*@SheinXCodes/gi, "")
             .trim();
 
-        if (text) {
+        if (text.length > 0) {
             try {
                 await whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, text);
+                const duration = Date.now() - startTime; // Calculate duration
+                console.log(`🚀 WhatsApp pe pahunch gaya: "${text.substring(0, 30)}..." (⏱️ Time taken: ${duration}ms)`);
             } catch (err) {
-                console.error("❌ Forward Failed:", err.message);
+                console.error("❌ WA bhejte waqt error:", err.message);
             }
+        } else {
+            console.log("⚠️ Cleaning ke baad text khali - skip");
         }
+    } else {
+        // Not allowed
     }
 }
 
