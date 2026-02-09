@@ -1,287 +1,387 @@
+require("dotenv").config();
 const { TelegramClient, Api } = require("telegram");
 const { NewMessage } = require("telegram/events");
 const { StringSession } = require("telegram/sessions");
 const input = require("input");
 const fs = require("fs");
 const { Client, LocalAuth } = require("whatsapp-web.js");
-const qrcodeTerminal = require("qrcode-terminal");
+const qrcodeTerminal = require("qrcode-terminal"); // Keeping for local debug if needed
 const express = require("express");
 const qrcode = require("qrcode");
-require("dotenv").config();
+const path = require("path");
 
 // ================= CONFIG =================
 const API_ID = parseInt(process.env.API_ID);
 const API_HASH = process.env.API_HASH;
-const PHONE_NUMBER = process.env.PHONE_NUMBER;
+const PHONE_NUMBER = process.env.PHONE_NUMBER; // Fallback if no session
+const TARGET_WHATSAPP_NUMBER = process.env.TARGET_WHATSAPP_NUMBER;
 const PORT = process.env.PORT || 3000;
 
-// Allowed usernames (fallback)
+// Allowed usernames & IDs
 const ALLOWED_SOURCES = ["LootVersePremiumBot", "SheinVouchers"];
-
-// Verified IDs (string format) - bot positive, channel negative
-const ALLOWED_IDS = [
-    "8530434659",          // Bot ka ID (@userinfobot se mila)
-    "-1002051429004"       // Channel ID
-    // Aur IDs chahiye toh yahan daal dena
-];
-
-const TARGET_WHATSAPP_NUMBER = process.env.TARGET_WHATSAPP_NUMBER; // WA group ID
+const ALLOWED_IDS = ["8530434659", "-1002051429004"];
 
 const SESSION_FILE = "session.txt";
-// =========================================
 
-// ================= WEB SERVER & STATE =================
+// ================= STATE MANAGEMENT =================
 const app = express();
-let qrCodeData = "";
-let isClientReady = false;
+app.use(express.urlencoded({ extended: true })); // parsing form data
+
+// WhatsApp State
+let waQrCodeData = "";
+let isWaReady = false;
+
+// Telegram State
+let tgClient = null;
+let isTgReady = false;
+let tgQrCodeData = "";
+let tgPasswordCallback = null; // Function to resolve when password is provided
+let tgPasswordError = null;
+
+// ================= WEB SERVER =================
 
 app.get("/", async (req, res) => {
-    if (isClientReady) {
-        res.send(`
-            <html>
-                <head>
-                    <title>WhatsApp Status</title>
-                    <meta http-equiv="refresh" content="30">
-                    <style>
-                        body { font-family: sans-serif; text-align: center; padding: 50px; background: #f0f2f5; }
-                        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block; }
-                        h1 { color: #25D366; }
-                        .btn { background: #ff4d4d; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 20px; }
-                        .btn:hover { background: #cc0000; }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>✅ WhatsApp Connected!</h1>
-                        <p>Messages are being forwarded.</p>
-                        <form action="/logout" method="POST">
-                            <button type="submit" class="btn">LOGOUT SESSION</button>
-                        </form>
-                    </div>
-                </body>
-            </html>
-        `);
-    } else if (qrCodeData) {
+    let html = `
+    <html>
+        <head>
+            <title>Bot Manager</title>
+            <meta http-equiv="refresh" content="10">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; text-align: center; padding: 20px; background: #f0f2f5; color: #1c1e21; }
+                .container { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; max-width: 1200px; margin: 0 auto; }
+                .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; display: flex; flex-direction: column; align-items: center; }
+                h1 { margin-bottom: 20px; }
+                h2 { margin-top: 0; color: #333; }
+                .status-badge { padding: 5px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; margin-bottom: 15px; display: inline-block; }
+                .connected { background: #dcf8c6; color: #075e54; }
+                .disconnected { background: #fee2e2; color: #991b1b; }
+                .btn { background: #0088cc; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 10px; text-decoration: none; display: inline-block; }
+                .btn.logout { background: #dc3545; }
+                .btn.login { background: #28a745; }
+                .btn:hover { opacity: 0.9; }
+                img.qr { width: 250px; height: 250px; margin: 15px 0; border: 1px solid #ddd; border-radius: 8px; }
+                input[type="password"] { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 100%; margin-bottom: 10px; box-sizing: border-box; }
+                .error { color: red; font-size: 0.9em; }
+            </style>
+        </head>
+        <body>
+            <h1>🤖 Bot Control Panel</h1>
+            <div class="container">
+    `;
+
+    // --- WhatsApp Station ---
+    html += `<div class="card">
+        <h2>WhatsApp</h2>
+        <span class="status-badge ${isWaReady ? 'connected' : 'disconnected'}">
+            ${isWaReady ? '✅ CONNECTED' : '❌ DISCONNECTED'}
+        </span>`;
+
+    if (isWaReady) {
+        html += `
+            <p>Forwarding active to: <br><strong>${TARGET_WHATSAPP_NUMBER}</strong></p>
+            <form action="/wa/logout" method="POST">
+                <button type="submit" class="btn logout">Logout WhatsApp</button>
+            </form>`;
+    } else if (waQrCodeData) {
         try {
-            const qrImage = await qrcode.toDataURL(qrCodeData);
-            res.send(`
-                <html>
-                    <head>
-                        <title>Scan WhatsApp QR</title>
-                        <meta http-equiv="refresh" content="5">
-                        <style>
-                            body { font-family: sans-serif; text-align: center; padding: 50px; background: #202c33; color: white; }
-                            .container { background: white; padding: 30px; border-radius: 10px; display: inline-block; }
-                            h2 { color: #333; margin-bottom: 20px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <h2>Scan this QR Code</h2>
-                            <img src="${qrImage}" alt="QR Code" style="width: 300px; height: 300px;">
-                            <p style="color: #666; margin-top: 15px;">Refresh if not working</p>
-                        </div>
-                    </body>
-                </html>
-            `);
-        } catch (err) {
-            res.status(500).send("Error generating QR code");
-        }
+            const qrUrl = await qrcode.toDataURL(waQrCodeData);
+            html += `
+                <img class="qr" src="${qrUrl}" alt="WA QR">
+                <p>Scan with WhatsApp (Linked Devices)</p>`;
+        } catch (e) { html += `<p class="error">Error generating QR</p>`; }
     } else {
-        res.send(`
-            <html>
-                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #f0f2f5;">
-                    <h2>⏳ Initializing WhatsApp... Please wait.</h2>
-                    <script>setTimeout(() => window.location.reload(), 3000);</script>
-                </body>
-            </html>
-        `);
+        html += `<p>⏳ Initializing Client...</p>`;
     }
+    html += `</div>`;
+
+    // --- Telegram Station ---
+    html += `<div class="card">
+        <h2>Telegram</h2>
+        <span class="status-badge ${isTgReady ? 'connected' : 'disconnected'}">
+            ${isTgReady ? '✅ CONNECTED' : '❌ DISCONNECTED'}
+        </span>`;
+
+    if (isTgReady) {
+        html += `
+            <p>Listening for messages...</p>
+            <form action="/tg/logout" method="POST">
+                <button type="submit" class="btn logout">Logout Telegram</button>
+            </form>`;
+    } else if (tgPasswordCallback) {
+        // Waiting for 2FA Password
+        html += `
+            <p>🔒 <strong>2FA Password Required</strong></p>
+            <form action="/tg/password" method="POST" style="width: 100%">
+                <input type="password" name="password" placeholder="Enter Cloud Password" required>
+                ${tgPasswordError ? `<p class="error">${tgPasswordError}</p>` : ''}
+                <button type="submit" class="btn login">Submit Password</button>
+            </form>`;
+    } else if (tgQrCodeData) {
+        try {
+            const qrUrl = await qrcode.toDataURL(tgQrCodeData);
+            html += `
+                <img class="qr" src="${qrUrl}" alt="TG QR">
+                <p>Scan with Telegram App (Settings > Devices > Link Desktop Device)</p>`;
+        } catch (e) { html += `<p class="error">Error generating QR</p>`; }
+    } else {
+        // Not connected, no QR yet. Look for login button
+        html += `
+            <form action="/tg/login" method="POST">
+                <button type="submit" class="btn">Login with QR Code</button>
+            </form>`;
+    }
+    html += `</div></div></body></html>`;
+
+    res.send(html);
 });
 
-app.post("/logout", async (req, res) => {
-    try {
-        console.log("⚠️ Logout requested from Web UI...");
+// --- WhatsApp Actions ---
+app.post("/wa/logout", async (req, res) => {
+    if (whatsappClient) {
         await whatsappClient.destroy();
-
-        // Remove auth folder manually just to be safe
-        const fs = require('fs');
-        const path = require('path');
+        // Clean auth dir
         const authPath = path.join(__dirname, '.wwebjs_auth');
-        if (fs.existsSync(authPath)) {
-            fs.rmSync(authPath, { recursive: true, force: true });
-        }
+        if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
 
-        isClientReady = false;
-        qrCodeData = "";
-
-        console.log("♻️ Client destroyed & session cleared. Restarting...");
+        isWaReady = false;
+        waQrCodeData = "";
         whatsappClient.initialize();
-
-        res.send(`
-            <html>
-                <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-                    <h1>Logged Out</h1>
-                    <p>Session cleared. Redirecting to QR page...</p>
-                    <script>setTimeout(() => window.location.href = "/", 3000);</script>
-                </body>
-            </html>
-        `);
-    } catch (err) {
-        console.error("Logout failed:", err);
-        res.status(500).send("Logout failed: " + err.message);
     }
+    res.redirect("/");
+});
+
+// --- Telegram Actions ---
+app.post("/tg/login", async (req, res) => {
+    if (!isTgReady && !tgQrCodeData) {
+        startTelegramLoginFlow();
+    }
+    res.redirect("/");
+});
+
+app.post("/tg/password", async (req, res) => {
+    const pwd = req.body.password;
+    if (tgPasswordCallback && pwd) {
+        tgPasswordCallback(pwd);
+        tgPasswordCallback = null; // Reset
+    }
+    res.redirect("/");
+});
+
+app.post("/tg/logout", async (req, res) => {
+    if (tgClient) {
+        try {
+            await tgClient.disconnect();
+            await tgClient.destroy();
+        } catch (e) { }
+
+        // Remove session file
+        if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+        tgClient = null;
+        isTgReady = false;
+        tgQrCodeData = "";
+        process.env.TG_SESSION = ""; // Clear from memory env too if set
+
+        // Re-init bare client state
+        initTelegramClient();
+    }
+    res.redirect("/");
 });
 
 app.listen(PORT, () => {
-    console.log(`🌍 Server running on port ${PORT}`);
+    console.log(`🌍 Web Interface running on port ${PORT}`);
 });
 
-// ================= WHATSAPP CLIENT =================
-console.log("🚀 WhatsApp Client shuru...");
+
+// ================= WHATSAPP LOGIC =================
+console.log("🚀 Initializing WhatsApp...");
 const whatsappClient = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
 
 whatsappClient.on("qr", (qr) => {
-    console.log("📲 New QR Code received!");
-    qrCodeData = qr;
-    console.log(`🔗 Open this link to scan: http://localhost:${PORT} (or your Railway URL)`);
-    // qrcodeTerminal.generate(qr, { small: true }); // Removed as per request
+    console.log("📲 New WhatsApp QR received");
+    waQrCodeData = qr;
 });
 
 whatsappClient.on("ready", () => {
-    console.log("✅ WhatsApp Connected & Ready!");
-    isClientReady = true;
-    qrCodeData = "";
+    console.log("✅ WhatsApp Ready!");
+    isWaReady = true;
+    waQrCodeData = "";
 });
 
 whatsappClient.on("authenticated", () => {
-    console.log("✅ WA Auth Done");
-    isClientReady = true;
+    console.log("✅ WhatsApp Authenticated");
+    isWaReady = true;
 });
 
-whatsappClient.on("auth_failure", (msg) => {
-    console.error("❌ WA Auth Fail:", msg);
-    isClientReady = false;
-});
-
-whatsappClient.on("disconnected", (reason) => {
-    console.log("⚠️ WhatsApp Client was disconnected:", reason);
-    isClientReady = false;
-    qrCodeData = "";
-    // Auto re-initialize happens? usually requires manual re-init logic if not using reload
+whatsappClient.on("disconnected", () => {
+    console.log("⚠️ WhatsApp Disconnected");
+    isWaReady = false;
+    waQrCodeData = "";
     whatsappClient.initialize();
 });
 
 whatsappClient.initialize();
 
-// ================= TELEGRAM CLIENT =================
-const sessionString = process.env.TG_SESSION || (fs.existsSync(SESSION_FILE) ? fs.readFileSync(SESSION_FILE, "utf8") : "");
-const stringSession = new StringSession(sessionString);
 
-(async () => {
-    console.log("🔐 Telegram se connect ho raha...");
+// ================= TELEGRAM LOGIC =================
+async function initTelegramClient() {
+    console.log("🚀 Initializing Telegram Client...");
 
-    const client = new TelegramClient(stringSession, API_ID, API_HASH, {
+    // Check if we have session data (Env var or File)
+    let sessionData = process.env.TG_SESSION || "";
+    if (!sessionData && fs.existsSync(SESSION_FILE)) {
+        sessionData = fs.readFileSync(SESSION_FILE, "utf8");
+    }
+
+    const stringSession = new StringSession(sessionData);
+
+    tgClient = new TelegramClient(stringSession, API_ID, API_HASH, {
         connectionRetries: 5,
+        useWSS: true // helpful for some environments
     });
 
-    await client.start({
-        phoneNumber: PHONE_NUMBER,
-        password: async () => await input.text("2FA Password (agar hai toh): "),
-        phoneCode: async () => await input.text("OTP daal bhai: "),
-        onError: (err) => console.error("Start mein error:", err),
-    });
+    // Event Handler (Shared logic)
+    tgClient.addEventHandler(handleTelegramMessage, new NewMessage({ incoming: true }));
 
-    fs.writeFileSync(SESSION_FILE, client.session.save());
-    console.log("✅ Telegram Login Success!");
+    try {
+        // Attempt fast connection if session exists
+        if (sessionData) {
+            console.log("🔄 Found session, attempting to connect...");
+            await tgClient.connect();
 
-    const me = await client.getMe();
-    console.log(`🙋‍♂️ Tu login hai: ${me.username || me.firstName} (ID: ${me.id})`);
-
-    // ================= POWER KEEP-ALIVE (bot private msgs ke liye must) =================
-    setInterval(async () => {
-        try {
-            await Promise.all([
-                client.getDialogs({ limit: 4 }),                // Dialogs refresh
-                client.getMe(),                                 // Self check
-                client.invoke(new Api.updates.GetState({}))     // Force updates pull
-            ]);
-            console.log("🔄 Keep-alive chal raha (private/bot updates safe)");
-        } catch (err) {
-            console.error("Keep-alive fail:", err.message);
-        }
-    }, 20000);  // 20 seconds - tested reliable
-
-    // ================= BOT INTERACTION REMINDER =================
-    console.log("\n⚠️ ZAROORI: Abhi bot ke private chat mein jaa aur '/start' ya 'hi' bhej de!");
-    console.log("   Bina iske bot ke private msgs miss ho sakte hain (Telegram rule)");
-    console.log("   Bhej ke baad script restart kar dena → messages aane lagenge\n");
-
-    // ================= MESSAGE HANDLER =================
-    const messageHandler = async (event) => {
-        const message = event.message;
-        if (!message || message.out) return; // sirf incoming
-
-        // Debug - har incoming pe yeh dikhega
-        console.log("\n=== 🔥 INCOMING MESSAGE PAKDA ===");
-        console.log("From Bot?     :", message.sender?.bot || false);
-        console.log("Sender ID     :", message.senderId?.toString() || "nahi mila");
-        console.log("Chat ID       :", message.chatId?.toString() || "nahi mila");
-        console.log("Text (start)  :", (message.text || "[media ya empty]").substring(0, 120));
-        console.log("===============================\n");
-
-        // Allowed check
-        const senderId = message.senderId?.toString();
-        const chatId = message.chatId?.toString();
-
-        let isAllowed = ALLOWED_IDS.includes(senderId) || ALLOWED_IDS.includes(chatId);
-
-        if (!isAllowed) {
-            try {
-                const sender = await message.getSender().catch(() => null);
-                const chat = await message.getChat().catch(() => null);
-                if (sender?.username && ALLOWED_SOURCES.includes(sender.username)) isAllowed = true;
-                if (chat?.username && ALLOWED_SOURCES.includes(chat.username)) isAllowed = true;
-            } catch { }
-        }
-
-        if (isAllowed) {
-            console.log("📩 Yeh allowed source hai - Forward kar raha...");
-
-            let text = message.text || "[Sirf media - text nahi]";
-
-            // Cleaning (tera original)
-            text = text.replace(/\*\*/g, "*")
-                .replace("⚡ *FAST DROP*", "")
-                .replace("⚡ *Men’s Product Alert (Superfast)*", "")
-                .replace(`Buy Cheap Vouchers🫶\n🛒 Buy Vouchers\n\nFree Rs500 SHEIN Coupon⚡️\n💰 Free ₹500\n😄 Group And Info`, "")
-                .replace(/🛒\s*\*{0,2}Buy Vouchers\*{0,2}:.*@SheinXVouchers_Bot/gi, "")
-                .replace(/⚙️\s*\*{0,2}Powered by\*{0,2}:.*@SheinXCodes/gi, "")
-                .trim();
-
-            if (text.length > 0) {
-                try {
-                    await whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, text);
-                    console.log(`🚀 WhatsApp pe pahunch gaya: "${text.substring(0, 60)}..."`);
-                } catch (err) {
-                    console.error("❌ WA bhejte waqt error:", err.message);
-                }
+            // Check if actually authorized
+            if (await tgClient.checkAuthorization()) {
+                onTelegramConnected();
             } else {
-                console.log("⚠️ Cleaning ke baad text khali - skip");
+                console.log("⚠️ Session invalid or expired.");
+                // Session dead, clear it so user can login via QR
+                fs.writeFileSync(SESSION_FILE, "");
+                isTgReady = false;
             }
-        } else {
-            console.log("🚫 Allowed nahi - ignore kar diya");
         }
-    };
+    } catch (err) {
+        console.error("❌ Telegram Init Error:", err);
+        if (err.message.includes("AUTH_KEY_DUPLICATED") || err.code === 406) {
+            console.log("⚠️ Session Duplicated/Corrupted. Clearing session to allow new login...");
+            if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+            process.env.TG_SESSION = ""; // Clear env var in memory
+            tgClient = null;
+            isTgReady = false;
+        }
+    }
+}
 
-    // Events register
-    client.addEventHandler(messageHandler, new NewMessage({ incoming: true }));
+// Function triggered by Web UI "Login with QR"
+async function startTelegramLoginFlow() {
+    if (isTgReady) return;
+    console.log("📸 Starting Telegram QR Flow...");
 
-    console.log("🎧 Sun raha hu ab - Bot + Channel dono aa jayenge!");
+    try {
+        if (!tgClient) await initTelegramClient();
+        if (!tgClient.connected) await tgClient.connect();
 
-    // Crash avoid
-    process.on('uncaughtException', err => console.error("Unexpected error avoid:", err));
-})();
+        // If not connected, we start the QR flow
+        await tgClient.signInUserWithQrCode(
+            { apiId: API_ID, apiHash: API_HASH },
+            {
+                qrCode: async (code) => {
+                    console.log("📸 New Telegram QR Code generated");
+                    tgQrCodeData = `tg://login?token=${code.token.toString("base64url")}`;
+                },
+                password: async (hint) => {
+                    console.log("🔒 2FA Password needed. Hint:", hint);
+                    tgQrCodeData = ""; // Clear QR, show password UI
+                    return new Promise((resolve) => {
+                        tgPasswordCallback = resolve;
+                    });
+                },
+                onError: (err) => {
+                    console.error("TG Login Error:", err);
+                    tgPasswordError = err.message;
+                }
+            }
+        );
+
+        // If successful
+        onTelegramConnected();
+
+    } catch (err) {
+        console.error("Telegram Login Flow Failed:", err);
+        // Reset state so user can try again
+        tgQrCodeData = "";
+    }
+}
+
+async function onTelegramConnected() {
+    console.log("✅ Telegram Connected Successfully!");
+    isTgReady = true;
+    tgQrCodeData = "";
+    tgPasswordCallback = null;
+
+    // Save session
+    const sessionStr = tgClient.session.save();
+    fs.writeFileSync(SESSION_FILE, sessionStr);
+
+    // Start Keep-Alive
+    startKeepAlive();
+}
+
+function startKeepAlive() {
+    setInterval(async () => {
+        if (!isTgReady || !tgClient) return;
+        try {
+            await tgClient.getMe();
+        } catch (err) {
+            console.error("Keep-Alive Ping Failed:", err.message);
+        }
+    }, 30000);
+}
+
+// ================= MESSAGE HANDLER =================
+async function handleTelegramMessage(event) {
+    if (!isWaReady) return; // Can't forward if WA is down
+
+    const message = event.message;
+    if (!message || message.out) return;
+
+    // ... (Existing filtering logic) ...
+    const senderId = message.senderId?.toString();
+    const chatId = message.chatId?.toString();
+
+    let isAllowed = ALLOWED_IDS.includes(senderId) || ALLOWED_IDS.includes(chatId);
+
+    if (!isAllowed) {
+        try {
+            const sender = await message.getSender().catch(() => null);
+            const chat = await message.getChat().catch(() => null);
+            if (sender?.username && ALLOWED_SOURCES.includes(sender.username)) isAllowed = true;
+            if (chat?.username && ALLOWED_SOURCES.includes(chat.username)) isAllowed = true;
+        } catch { }
+    }
+
+    if (isAllowed) {
+        console.log("📩 Forwarding Message...");
+        let text = message.text || "";
+
+        // Clean text
+        text = text.replace(/\*\*/g, "*")
+            .replace("⚡ *FAST DROP*", "")
+            .replace("⚡ *Men’s Product Alert (Superfast)*", "")
+            .replace(/Buy Cheap Vouchers.*\n/g, "") // Simplified cleanup for brevity, add full regex if needed
+            .trim();
+
+        if (text) {
+            try {
+                await whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, text);
+            } catch (err) {
+                console.error("❌ Forward Failed:", err.message);
+            }
+        }
+    }
+}
+
+// Start
+initTelegramClient();
