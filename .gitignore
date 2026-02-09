@@ -1,0 +1,6 @@
+node_modules/
+session.txt
+.wwebjs_auth/
+.wwebjs_cache/
+.env
+npm-debug.log

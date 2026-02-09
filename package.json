@@ -1,0 +1,14 @@
+{
+  "scripts": {
+    "start": "node tg.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "input": "^1.0.1",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "telegram": "^2.26.22",
+    "whatsapp-web.js": "^1.34.6"
+  }
+}
