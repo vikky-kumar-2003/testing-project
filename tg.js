@@ -395,9 +395,14 @@ async function handleTelegramMessage(event) {
 
         if (text.length > 0) {
             console.log(`� Added to Queue: "${text.substring(0, 20)}..."`);
+            const start = Date.now();
+            console.log(`[${new Date().toISOString()}] 🚀 Process Start`);
             // Send immediately without queue
             whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, text)
-                .then(() => console.log("✅ Sent"))
+                .then(() => {
+                    const lat = Date.now() - start;
+                    console.log(`[${new Date().toISOString()}] ✅ Sent (Lat: ${lat}ms)`);
+                })
                 .catch(err => console.error("❌ Send Error:", err.message));
         } else {
             console.log("⚠️ Cleared text empty - skip");
