@@ -352,33 +352,12 @@ function startKeepAlive() {
     }, 30000);
 }
 
-// ================= QUEUE LOGIC =================
-const msgQueue = [];
-let isProcessingQueue = false;
+// ================= QUEUE LOGIC REMOVED FOR INSTANT SENDING =================
+// const msgQueue = [];
+// let isProcessingQueue = false;
 
-async function processQueue() {
-    if (isProcessingQueue || msgQueue.length === 0) return;
-    isProcessingQueue = true;
+// async function processQueue() { ... } -> Removed
 
-    while (msgQueue.length > 0) {
-        const item = msgQueue.shift();
-        try {
-            const startTime = Date.now();
-            await whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, item.text);
-            const duration = Date.now() - startTime;
-            console.log(`🚀 WhatsApp sent: "${item.text.substring(0, 20)}..." (⏱️ ${duration}ms) | Queue: ${msgQueue.length}`);
-
-            // Artificial delay removed for speed
-            // await new Promise(r => setTimeout(r, 1000));
-        } catch (err) {
-            console.error("❌ Forward Queue Error:", err.message);
-            // If error, slight pause to recover
-            await new Promise(r => setTimeout(r, 500));
-        }
-    }
-
-    isProcessingQueue = false;
-}
 
 // ================= MESSAGE HANDLER =================
 async function handleTelegramMessage(event) {
@@ -416,8 +395,10 @@ async function handleTelegramMessage(event) {
 
         if (text.length > 0) {
             console.log(`� Added to Queue: "${text.substring(0, 20)}..."`);
-            msgQueue.push({ text });
-            processQueue();
+            // Send immediately without queue
+            whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, text)
+                .then(() => console.log("✅ Sent"))
+                .catch(err => console.error("❌ Send Error:", err.message));
         } else {
             console.log("⚠️ Cleared text empty - skip");
         }
