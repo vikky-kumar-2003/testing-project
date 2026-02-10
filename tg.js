@@ -208,7 +208,7 @@ const whatsappClient = new Client({
             '--no-zygote',
             '--disable-gpu'
         ],
-        protocolTimeout: 120000 // 2 minutes timeout for slow environments
+        protocolTimeout: 300000 // 5 minutes timeout
     }
 });
 
@@ -352,6 +352,34 @@ function startKeepAlive() {
     }, 30000);
 }
 
+// ================= QUEUE LOGIC =================
+const msgQueue = [];
+let isProcessingQueue = false;
+
+async function processQueue() {
+    if (isProcessingQueue || msgQueue.length === 0) return;
+    isProcessingQueue = true;
+
+    while (msgQueue.length > 0) {
+        const item = msgQueue.shift();
+        try {
+            const startTime = Date.now();
+            await whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, item.text);
+            const duration = Date.now() - startTime;
+            console.log(`🚀 WhatsApp sent: "${item.text.substring(0, 20)}..." (⏱️ ${duration}ms) | Queue: ${msgQueue.length}`);
+
+            // Artificial delay removed for speed
+            // await new Promise(r => setTimeout(r, 1000));
+        } catch (err) {
+            console.error("❌ Forward Queue Error:", err.message);
+            // If error, slight pause to recover
+            await new Promise(r => setTimeout(r, 500));
+        }
+    }
+
+    isProcessingQueue = false;
+}
+
 // ================= MESSAGE HANDLER =================
 async function handleTelegramMessage(event) {
     if (!isWaReady) return; // Can't forward if WA is down
@@ -375,12 +403,9 @@ async function handleTelegramMessage(event) {
     }
 
     if (isAllowed) {
-        const startTime = Date.now(); // Start timer
-        console.log("📩 Yeh allowed source hai - Forward kar raha...");
-
         let text = message.text || "[Sirf media - text nahi]";
 
-        // Cleaning (tera original)
+        // Cleaning
         text = text.replace(/\*\*/g, "*")
             .replace("⚡ *FAST DROP*", "")
             .replace("⚡ *Men’s Product Alert (Superfast)*", "")
@@ -390,18 +415,12 @@ async function handleTelegramMessage(event) {
             .trim();
 
         if (text.length > 0) {
-            try {
-                await whatsappClient.sendMessage(TARGET_WHATSAPP_NUMBER, text);
-                const duration = Date.now() - startTime; // Calculate duration
-                console.log(`🚀 WhatsApp pe pahunch gaya: "${text.substring(0, 30)}..." (⏱️ Time taken: ${duration}ms)`);
-            } catch (err) {
-                console.error("❌ WA bhejte waqt error:", err.message);
-            }
+            console.log(`� Added to Queue: "${text.substring(0, 20)}..."`);
+            msgQueue.push({ text });
+            processQueue();
         } else {
-            console.log("⚠️ Cleaning ke baad text khali - skip");
+            console.log("⚠️ Cleared text empty - skip");
         }
-    } else {
-        // Not allowed
     }
 }
 
